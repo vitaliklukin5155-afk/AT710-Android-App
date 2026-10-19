@@ -46,6 +46,25 @@ public class MainActivity extends Activity {
     private ParcelFileDescriptor accessoryFd;
     private UsbAccessory activeAccessory;
     private volatile boolean reading = false;
+    private final Handler ioStatusHandler = new Handler(Looper.getMainLooper());
+    private volatile long readerStartedMs = 0L;
+    private volatile long lastReceivedMs = 0L;
+    private volatile long receivedBytesTotal = 0L;
+    private final Runnable ioStatusRunnable = new Runnable() {
+        @Override public void run() {
+            if (!reading) return;
+            long now = android.os.SystemClock.elapsedRealtime();
+            long elapsedSec = Math.max(0L, (now - readerStartedMs) / 1000L);
+            long quietSec = receivedBytesTotal == 0L
+                ? elapsedSec
+                : Math.max(0L, (now - lastReceivedMs) / 1000L);
+            String status = receivedBytesTotal == 0L
+                ? "\n[USB-СТАТУС] Поток чтения работает " + elapsedSec + " с; получено 0 байт. Прибор пока ничего не передал. Команды не отправляются.\n"
+                : "\n[USB-СТАТУС] Получено всего " + receivedBytesTotal + " байт; тишина " + quietSec + " с.\n";
+            append(status);
+            ioStatusHandler.postDelayed(this, 5000L);
+        }
+    };
     private final Handler manualHandler = new Handler(Looper.getMainLooper());
     private long manualStartMs = 0L;
     private int manualPromptIndex = -1;
@@ -413,7 +432,12 @@ public class MainActivity extends Activity {
             return;
         }
         reading = true;
-        append("\nНачинаю ожидать данные от прибора. Если прибор ничего не передаёт сам, список останется пустым.\n");
+        readerStartedMs = android.os.SystemClock.elapsedRealtime();
+        lastReceivedMs = readerStartedMs;
+        receivedBytesTotal = 0L;
+        ioStatusHandler.removeCallbacks(ioStatusRunnable);
+        append("\nНачинаю пассивное чтение Android Accessory. Никакие команды титратору не отправляются. Через 5 секунд появится контрольный статус, даже если байтов не будет.\n");
+        ioStatusHandler.postDelayed(ioStatusRunnable, 5000L);
         final ParcelFileDescriptor fd = accessoryFd;
         Thread reader = new Thread(() -> {
             FileInputStream input = null;
@@ -430,6 +454,8 @@ public class MainActivity extends Activity {
                     }
                     if (count == 0) continue;
                     total += count;
+                    receivedBytesTotal = total;
+                    lastReceivedMs = android.os.SystemClock.elapsedRealtime();
                     StringBuilder hex = new StringBuilder();
                     StringBuilder ascii = new StringBuilder();
                     for (int i = 0; i < count; i++) {
@@ -451,6 +477,8 @@ public class MainActivity extends Activity {
                 if (reading) appendFromWorker("\nПриём остановлен: " + e.getClass().getSimpleName() + ". Если канал закрыт, откройте его снова.\n");
             } finally {
                 reading = false;
+                ioStatusHandler.removeCallbacks(ioStatusRunnable);
+                appendFromWorker("\\n[USB-СТАТУС] Поток чтения остановлен. Всего получено байт: " + total + ".\\n");
             }
         }, "AT710-Accessory-Reader");
         reader.setDaemon(true);
