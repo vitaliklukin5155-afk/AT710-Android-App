@@ -53,16 +53,14 @@ public class MainActivity extends Activity {
     private TextView manualElapsedView;
     private EditText manualPhInput;
     private EditText manualCo1Input;
+    private EditText manualVolumeInput;
     private EditText manualUnitInput;
     private AlertDialog manualDialog;
-    private final int[] manualPromptSeconds = new int[]{0, 30, 60, 120, 180, 300};
+    private final int[] manualPromptSeconds = new int[]{0, 90, 180};
     private final String[] manualPromptLabels = new String[]{
-        "СРАЗУ: перепиши с экрана титратора pH и CO1 до начала/на текущем этапе.",
-        "30 секунд: снова перепиши pH и CO1. Если на приборе идёт титрование — не прерывай его.",
-        "1 минута: снова перепиши pH и CO1 с экрана прибора.",
-        "2 минуты: перепиши pH и CO1; если титрование уже завершилось, отметь это в журнале.",
-        "3 минуты: перепиши текущие pH и CO1, если измерение ещё продолжается.",
-        "5 минут: перепиши pH и CO1, если измерение ещё продолжается. Дальше записывай при каждом изменении экрана."
+        "0:00 — запиши объём (мл), pH и CO1 (мг) с экрана титратора.",
+        "1:30 — запиши объём (мл), pH и CO1 (мг). Если CO1 ещё не отображается, оставь поле пустым.",
+        "3:00 — последняя из трёх запланированных записей: объём (мл), pH и CO1 (мг)."
     };
     private EditText manualPh, manualCo1, manualVolume, manualNote;
     private TextView guideText;
@@ -202,7 +200,7 @@ public class MainActivity extends Activity {
         panel.setPadding(pad, pad, pad, pad);
 
         TextView intro = new TextView(this);
-        intro.setText("Переписывай значения именно с экрана KEM AT-710. Не угадывай единицы CO1: введи их так, как они показаны на приборе. Сеанс не управляет титратором — он только собирает твои записи.");
+        intro.setText("Записывай три строки с экрана KEM AT-710. Единицы в приложении фиксированы: объём — мл, CO1 — мг. Если CO1 ещё не появился, оставь его пустым. Приложение не управляет титратором.");
         intro.setTextSize(15);
         panel.addView(intro);
 
@@ -215,22 +213,23 @@ public class MainActivity extends Activity {
         manualElapsedView.setText("Время сеанса: 00:00");
         panel.addView(manualElapsedView);
 
+        manualVolumeInput = new EditText(this);
+        manualVolumeInput.setHint("Объём раствора, мл");
+        manualVolumeInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        panel.addView(manualVolumeInput);
+
         manualPhInput = new EditText(this);
-        manualPhInput.setHint("pH с экрана, например 8,00");
+        manualPhInput.setHint("pH");
         manualPhInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
         panel.addView(manualPhInput);
 
         manualCo1Input = new EditText(this);
-        manualCo1Input.setHint("CO1 с экрана, например 0,3");
+        manualCo1Input.setHint("CO1, мг");
         manualCo1Input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
         panel.addView(manualCo1Input);
 
-        manualUnitInput = new EditText(this);
-        manualUnitInput.setHint("Единица CO1 как на приборе (если видна)");
-        panel.addView(manualUnitInput);
-
         TextView tip = new TextView(this);
-        tip.setText("Подсказки появятся через 30 секунд, 1, 2, 3 и 5 минут. Если прибор завершит измерение раньше — сразу запиши итог. Если длится дольше, сохраняй значения при каждом изменении экрана.");
+        tip.setText("Три записи: сразу (0:00), через 1 минуту 30 секунд и через 3 минуты. Единицы неизменны: объём — мл, CO1 — мг.");
         tip.setTextSize(13);
         tip.setPadding(0, pad, 0, 0);
         panel.addView(tip);
@@ -299,23 +298,23 @@ public class MainActivity extends Activity {
     private void saveManualObservation() {
         String ph = manualPhInput == null ? "" : manualPhInput.getText().toString().trim();
         String co1 = manualCo1Input == null ? "" : manualCo1Input.getText().toString().trim();
-        String unit = manualUnitInput == null ? "" : manualUnitInput.getText().toString().trim();
-        if (ph.isEmpty() && co1.isEmpty()) {
+        String volume = manualVolumeInput == null ? "" : manualVolumeInput.getText().toString().trim();
+        if (ph.isEmpty() && co1.isEmpty() && volume.isEmpty()) {
             Toast.makeText(this, "Введи хотя бы одно значение с экрана прибора", Toast.LENGTH_SHORT).show();
             return;
         }
         long elapsed = Math.max(0L, (android.os.SystemClock.elapsedRealtime() - manualStartMs) / 1000L);
         String record = String.format(java.util.Locale.US,
-            "\n[РУЧНОЕ НАБЛЮДЕНИЕ %02d:%02d] pH=%s; CO1=%s%s\n",
+            "\n[РУЧНОЕ НАБЛЮДЕНИЕ %02d:%02d] Объём=%s мл; pH=%s; CO1=%s мг\n",
             elapsed / 60, elapsed % 60,
+            volume.isEmpty() ? "не указано" : volume,
             ph.isEmpty() ? "не указано" : ph,
-            co1.isEmpty() ? "не указано" : co1,
-            unit.isEmpty() ? "" : "; единица CO1=" + unit);
+            co1.isEmpty() ? "нет значения" : co1);
         append(record);
-        Toast.makeText(this, "Запись добавлена в журнал. Можно внести следующие показания.", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Запись добавлена в журнал.", Toast.LENGTH_SHORT).show();
         manualPhInput.setText("");
         manualCo1Input.setText("");
-        manualUnitInput.setText("");
+        manualVolumeInput.setText("");
     }
 
     private void append(String text) {
