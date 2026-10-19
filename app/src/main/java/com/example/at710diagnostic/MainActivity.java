@@ -478,7 +478,7 @@ public class MainActivity extends Activity {
             } finally {
                 reading = false;
                 ioStatusHandler.removeCallbacks(ioStatusRunnable);
-                appendFromWorker("\\n[USB-СТАТУС] Поток чтения остановлен. Всего получено байт: " + total + ".\\n");
+                appendFromWorker("\n[USB-СТАТУС] Поток чтения остановлен. Всего получено байт: " + total + ".\n");
             }
         }, "AT710-Accessory-Reader");
         reader.setDaemon(true);
