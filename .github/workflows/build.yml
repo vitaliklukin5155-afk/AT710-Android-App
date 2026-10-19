@@ -23,8 +23,11 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Use preinstalled Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME/platform-tools"
+          ls "$ANDROID_HOME/platforms"
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
       - name: Upload APK
