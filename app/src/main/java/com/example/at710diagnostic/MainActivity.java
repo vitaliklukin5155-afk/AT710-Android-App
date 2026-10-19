@@ -24,13 +24,19 @@ public class MainActivity extends Activity {
     private static final String ACTION_USB_PERMISSION = "com.example.at710diagnostic.USB_PERMISSION";
     private UsbManager usbManager;
     private TextView output;
+    private boolean receiverRegistered = false;
+
     private final BroadcastReceiver permissionReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
-            if (ACTION_USB_PERMISSION.equals(intent.getAction())) {
-                UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-                boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
-                append("\nРазрешение USB: " + (granted ? "получено" : "отклонено"));
-                if (device != null && granted) append("\nУстройство доступно. Протокол обмена с прибором пока не реализован.");
+            try {
+                if (ACTION_USB_PERMISSION.equals(intent.getAction())) {
+                    UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                    boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
+                    append("\nРазрешение USB: " + (granted ? "получено" : "отклонено"));
+                    if (device != null && granted) append("\nУстройство доступно. Протокол прибора пока не реализован.");
+                }
+            } catch (Exception e) {
+                append("\nОшибка обработки USB-разрешения: " + e.getClass().getSimpleName());
             }
         }
     };
@@ -38,9 +44,6 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(permissionReceiver, new IntentFilter(ACTION_USB_PERMISSION), Context.RECEIVER_NOT_EXPORTED);
-        else registerReceiver(permissionReceiver, new IntentFilter(ACTION_USB_PERMISSION));
-
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(24, 24, 24, 24);
@@ -57,71 +60,95 @@ public class MainActivity extends Activity {
         scroll.addView(output, new ViewGroup.LayoutParams(-1, -2));
         layout.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(layout);
+
+        try {
+            IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(permissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            else registerReceiver(permissionReceiver, filter);
+            receiverRegistered = true;
+        } catch (Exception e) {
+            append("Не удалось зарегистрировать обработчик USB-разрешения: " + e.getMessage() + "\n");
+        }
         scan.setOnClickListener(v -> scanDevices());
         scanDevices();
     }
 
-    private void append(String text) { output.append(text); }
+    private void append(String text) {
+        if (output != null) output.append(text);
+    }
 
     private void scanDevices() {
-        output.setText("Проверка USB Host и Android Accessory (ADK)…\n\n");
-        if (usbManager == null) { append("USB Manager недоступен на этом устройстве."); return; }
-
-        // Android Accessory mode is different from ordinary USB Host mode.
-        UsbAccessory[] accessories = usbManager.getAccessoryList();
-        if (accessories == null || accessories.length == 0) {
-            append("Режим Android Accessory / ADK: аксессуар не обнаружен.\n");
-        } else {
-            append("Найдено Android Accessory: " + accessories.length + "\n");
-            for (UsbAccessory accessory : accessories) {
-                append("Производитель: " + safe(accessory.getManufacturer()) + "\n");
-                append("Модель: " + safe(accessory.getModel()) + "\n");
-                append("Версия: " + safe(accessory.getVersion()) + "\n");
-                append("Описание: " + safe(accessory.getDescription()) + "\n");
-                ParcelFileDescriptor fd = usbManager.openAccessory(accessory);
-                append(fd != null
-                    ? "Android открыл канал accessory. Обмен данными и протокол KEM ещё не реализованы.\n"
-                    : "Accessory найден, но открыть канал не удалось.\n");
-                if (fd != null) try { fd.close(); } catch (Exception ignored) {}
-                append("\n-------------------------\n\n");
+        try {
+            output.setText("Проверка USB Host и Android Accessory (ADK)…\n\n");
+            if (usbManager == null) {
+                append("USB Manager недоступен на этом устройстве.");
+                return;
             }
-        }
-
-        HashMap<String, UsbDevice> devices = usbManager.getDeviceList();
-        if (devices.isEmpty()) {
-            append("\nОбычный USB Host: устройства не найдены.\n");
-        } else {
-            append("\nОбычный USB Host: найдено устройств: " + devices.size() + "\n\n");
-            for (UsbDevice device : devices.values()) {
-                append("Устройство: " + device.getDeviceName() + "\n");
-                append(String.format("Vendor ID: 0x%04X (%d)\n", device.getVendorId(), device.getVendorId()));
-                append(String.format("Product ID: 0x%04X (%d)\n", device.getProductId(), device.getProductId()));
-                append("Класс: " + device.getDeviceClass() + ", подкласс: " + device.getDeviceSubclass() + "\n");
-                append("Интерфейсов: " + device.getInterfaceCount() + "\n");
-                for (int i = 0; i < device.getInterfaceCount(); i++) {
-                    android.hardware.usb.UsbInterface intf = device.getInterface(i);
-                    append("  Интерфейс " + i + ": класс=" + intf.getInterfaceClass() + ", подкласс=" + intf.getInterfaceSubclass() + ", endpoints=" + intf.getEndpointCount() + "\n");
+            UsbAccessory[] accessories = usbManager.getAccessoryList();
+            if (accessories == null || accessories.length == 0) {
+                append("Режим Android Accessory / ADK: аксессуар не обнаружен.\n");
+            } else {
+                append("Найдено Android Accessory: " + accessories.length + "\n");
+                for (UsbAccessory accessory : accessories) {
+                    ParcelFileDescriptor fd = null;
+                    try {
+                        append("Производитель: " + safe(accessory.getManufacturer()) + "\n");
+                        append("Модель: " + safe(accessory.getModel()) + "\n");
+                        append("Версия: " + safe(accessory.getVersion()) + "\n");
+                        fd = usbManager.openAccessory(accessory);
+                        append(fd != null ? "Accessory-канал открыт; протокол прибора ещё не реализован.\n" : "Не удалось открыть accessory-канал.\n");
+                    } catch (Exception e) {
+                        append("Ошибка accessory: " + e.getClass().getSimpleName() + "\n");
+                    } finally {
+                        if (fd != null) try { fd.close(); } catch (Exception ignored) {}
+                    }
                 }
-                if (!usbManager.hasPermission(device)) {
-                    Intent intent = new Intent(ACTION_USB_PERMISSION);
-                    PendingIntent pi = PendingIntent.getBroadcast(this, device.getDeviceId(), intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                    usbManager.requestPermission(device, pi);
-                    append("Запрошено разрешение Android на USB.\n");
-                } else {
-                    UsbDeviceConnection connection = usbManager.openDevice(device);
-                    append(connection != null ? "Android разрешил открыть устройство.\n" : "Разрешение есть, но открыть устройство не удалось.\n");
-                    if (connection != null) connection.close();
-                }
-                append("\n-------------------------\n\n");
             }
+
+            HashMap<String, UsbDevice> devices = usbManager.getDeviceList();
+            if (devices.isEmpty()) {
+                append("\nОбычный USB Host: устройства не найдены.\n");
+            } else {
+                append("\nОбычный USB Host: найдено устройств: " + devices.size() + "\n\n");
+                for (UsbDevice device : devices.values()) {
+                    UsbDeviceConnection connection = null;
+                    try {
+                        append("Устройство: " + device.getDeviceName() + "\n");
+                        append(String.format("Vendor ID: 0x%04X (%d)\n", device.getVendorId(), device.getVendorId()));
+                        append(String.format("Product ID: 0x%04X (%d)\n", device.getProductId(), device.getProductId()));
+                        append("Класс: " + device.getDeviceClass() + ", интерфейсов: " + device.getInterfaceCount() + "\n");
+                        if (!usbManager.hasPermission(device)) {
+                            Intent intent = new Intent(ACTION_USB_PERMISSION);
+                            PendingIntent pi = PendingIntent.getBroadcast(this, device.getDeviceId(), intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                            usbManager.requestPermission(device, pi);
+                            append("Запрошено разрешение Android на USB.\n");
+                        } else {
+                            connection = usbManager.openDevice(device);
+                            append(connection != null ? "Android открыл USB-устройство.\n" : "Android не смог открыть устройство.\n");
+                        }
+                    } catch (Exception e) {
+                        append("Ошибка устройства: " + e.getClass().getSimpleName() + "\n");
+                    } finally {
+                        if (connection != null) try { connection.close(); } catch (Exception ignored) {}
+                    }
+                    append("\n-------------------------\n\n");
+                }
+            }
+            append("\nЭта версия только диагностирует USB Host и Accessory/ADK. Протокол KEM AT-710 и чтение результатов пока не реализованы.");
+        } catch (Exception e) {
+            append("\nСканирование прервано безопасно: " + e.getClass().getSimpleName() + ". Отключите USB и повторите.");
+        } catch (LinkageError e) {
+            append("\nОшибка системного USB-компонента: " + e.getClass().getSimpleName());
         }
-        append("\nВажно: эта версия проверяет два режима USB — Host и Accessory/ADK. Она пока не читает результаты титрования и не реализует протокол KEM AT-710.");
     }
 
     private String safe(String value) { return value == null || value.isEmpty() ? "(не указано)" : value; }
 
     @Override protected void onDestroy() {
-        try { unregisterReceiver(permissionReceiver); } catch (Exception ignored) {}
+        if (receiverRegistered) {
+            try { unregisterReceiver(permissionReceiver); } catch (Exception ignored) {}
+            receiverRegistered = false;
+        }
         super.onDestroy();
     }
 }
