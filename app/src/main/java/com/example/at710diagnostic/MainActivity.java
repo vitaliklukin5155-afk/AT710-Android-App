@@ -159,10 +159,10 @@ public class MainActivity extends Activity {
 
         output = new TextView(this);
         output.setTextSize(16);
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(output, new ViewGroup.LayoutParams(-1, -2));
-        layout.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        setContentView(layout);
+        layout.addView(output, new LinearLayout.LayoutParams(-1, -2));
+        ScrollView mainScroll = new ScrollView(this);
+        mainScroll.addView(layout, new ScrollView.LayoutParams(-1, -2));
+        setContentView(mainScroll);
 
         try {
             IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
