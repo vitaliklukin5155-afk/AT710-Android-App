@@ -363,7 +363,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (accessoryFd == null) {
-            append("\\nСначала нажмите «Разрешить и открыть канал связи», затем «СТАРТ ТИТРОВАНИЯ».\\n");
+            append("\nСначала нажмите «Разрешить и открыть канал связи», затем «СТАРТ ТИТРОВАНИЯ».\n");
             Toast.makeText(this, "Сначала откройте USB-канал.", Toast.LENGTH_LONG).show();
             return;
         }
@@ -371,7 +371,7 @@ public class MainActivity extends Activity {
         sessionStartedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
         if (startSessionButton != null) startSessionButton.setEnabled(false);
         if (finishSessionButton != null) finishSessionButton.setEnabled(true);
-        append("\\n===== СТАРТ ТИТРОВАНИЯ: " + sessionStartedAt + " =====\\n");
+        append("\n===== СТАРТ ТИТРОВАНИЯ: " + sessionStartedAt + " =====\n");
         startReadingAccessory();
     }
 
@@ -382,11 +382,11 @@ public class MainActivity extends Activity {
         }
         sessionActive = false;
         String finishedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
-        append("\\n===== ЗАВЕРШЕНИЕ ТИТРОВАНИЯ: " + finishedAt + " =====\\n");
+        append("\n===== ЗАВЕРШЕНИЕ ТИТРОВАНИЯ: " + finishedAt + " =====\n");
         synchronized (this) {
             if (rawLogWriter != null) {
                 try {
-                    rawLogWriter.write("# TITRATION_SESSION_FINISHED " + finishedAt + "\\n");
+                    rawLogWriter.write("# TITRATION_SESSION_FINISHED " + finishedAt + "\n");
                     rawLogWriter.flush();
                     rawLogWriter.close();
                 } catch (IOException ignored) {}
@@ -421,14 +421,14 @@ public class MainActivity extends Activity {
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Результат титрования — редактирование").setView(panel).setNegativeButton("Отмена", (d,w)->{}).setPositiveButton("Сохранить результат", null).create();
         dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
             String resultTime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
-            String record = "\\n===== РЕЗУЛЬТАТ ТИТРОВАНИЯ =====\\nНачало: " + sessionStartedAt + "\\nКонец: " + finishedAt + "\\nСохранено: " + resultTime + "\\nОбразец: " + emptyAsDash(sample.getText().toString()) + "\\nКислотное число: " + emptyAsDash(acid.getText().toString()) + "\\nЕдиницы: " + emptyAsDash(unit.getText().toString()) + "\\nМасса навески, г: " + emptyAsDash(mass.getText().toString()) + "\\nКонцентрация титранта: " + emptyAsDash(titrant.getText().toString()) + "\\nКомментарий: " + emptyAsDash(comment.getText().toString()) + "\\nИсходный USB-журнал: " + (rawLogFile == null ? "не создан" : rawLogFile.getAbsolutePath()) + "\\n";
+            String record = "\n===== РЕЗУЛЬТАТ ТИТРОВАНИЯ =====\nНачало: " + sessionStartedAt + "\nКонец: " + finishedAt + "\nСохранено: " + resultTime + "\nОбразец: " + emptyAsDash(sample.getText().toString()) + "\nКислотное число: " + emptyAsDash(acid.getText().toString()) + "\nЕдиницы: " + emptyAsDash(unit.getText().toString()) + "\nМасса навески, г: " + emptyAsDash(mass.getText().toString()) + "\nКонцентрация титранта: " + emptyAsDash(titrant.getText().toString()) + "\nКомментарий: " + emptyAsDash(comment.getText().toString()) + "\nИсходный USB-журнал: " + (rawLogFile == null ? "не создан" : rawLogFile.getAbsolutePath()) + "\n";
             append(record);
             try {
                 File resultFile = new File(getFilesDir(), "AT710_result_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".txt");
                 FileOutputStream out = new FileOutputStream(resultFile);
                 out.write(record.getBytes("UTF-8"));
                 out.close();
-                append("Файл результата сохранён: " + resultFile.getAbsolutePath() + "\\n");
+                append("Файл результата сохранён: " + resultFile.getAbsolutePath() + "\n");
                 Toast.makeText(this, "Результат сохранён на телефоне.", Toast.LENGTH_LONG).show();
             } catch (IOException e) {
                 Toast.makeText(this, "Не удалось сохранить файл результата: " + e.getClass().getSimpleName(), Toast.LENGTH_LONG).show();
