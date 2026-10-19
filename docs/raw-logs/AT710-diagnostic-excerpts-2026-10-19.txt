@@ -1,0 +1,105 @@
+# AT-710 diagnostic transcript — recoverable excerpts
+Date: 2026-10-19
+Purpose: evidence bundle for Claude Code protocol analysis.
+
+## IMPORTANT COMPLETENESS NOTICE
+This is NOT the complete original diagnostic log and must not be treated as a lossless 8,178-byte capture. The original log was pasted in multiple chat messages, but the complete verbatim transcript/raw HEX stream is not available in the currently retrievable context. This file gathers all exact excerpts and observations recoverable from the project notes. Missing bytes have NOT been fabricated or filled in. Replace/append this file with the complete export from the diagnostic app if available.
+
+## Capture sessions / transport
+- Android Accessory (ADK) device: manufacturer Kyoto Electronics CO.,LTD.; model TitrationViewer; version 1.0.
+- USB Host found no device; Android Accessory permission was granted and the channel opened.
+- App was receiving passively; no commands were sent to the titrator.
+- Three distinct capture sizes were reported across sessions: about 698 bytes, about 3,550 bytes, and 8,178 bytes. Treat them as separate captures unless evidence proves otherwise.
+- Latest capture reported 8,178 bytes total and then no more data after waiting 5, 10, 15, 20, 25 and 30 seconds.
+- Individual reads were 29 or 32 bytes. Read boundaries are not guaranteed to match protocol record boundaries.
+
+## Exact byte / text excerpts preserved in notes
+Initial control records:
+```text
+02 58 36 0D 0A 0D 0A 04
+02 58 37 0D 0A 0D 0A 04
+```
+Interpretation as visible ASCII: `.X6.....` and `.X7.....`.
+
+A received chunk was reported as:
+```text
+Получено байт: 32 (всего 3582)
+HEX: 02 4C 61 20 33 39 39 39 39 39 39 39 39 39 39 39 39 39 39 45 44 33 46
+```
+NOTE: only this prefix survives in the available context; do not assume it is the complete 32-byte HEX line.
+
+Selected record prefixes copied from the capture:
+```text
+La 39999999999999ED3FB81E85EB51
+B8224094D9224499224663DB81E85EB5
+1B8224090000000000000000
+La 42000000000000F03FB81E85EB51
+La 47000000000000F23FB81E85EB51
+La 62000000000000F83F83C0CAA145
+La 72000000000000FC3FF5285C8FC2
+La 73666666666666FC3FF5285C8FC2
+La 74CCCCCCCCCCCCFC3FF5285C8FC2
+La 75333333333333FD3FF5285C8FC2
+La 76999999999999FD3FF5285C8FC2
+La 77000000000000FE3FF5285C8FC2
+La 78666666666666FE3FF5285C8FC2
+La 79CCCCCCCCCCCCFE3FF5285C8FC2
+La 80333333333333FF3FF5285C8FC2
+La 81999999999999FF3FF5285C8FC2
+La 820000000000000040F5285C8FC2
+```
+The displayed `La` strings are readable renderings of records whose raw prefix is often `02 4C 61`. These are fragments/prefixes, not guaranteed full records.
+
+Common terminator pattern observed:
+```text
+0D 0A 0D 0A 04
+```
+Some records began with `B...`. A text block contained `AT-710` and fields below.
+
+## Exact decoded-looking text block
+```text
+AT-710
+ha 9.3629
+hb 9.3559
+i 0.00005
+j 2.00005
+k000614
+l 9.88003
+ma
+mb
+mc
+md
+me
+na
+nb
+nc
+nd
+ne
+```
+The empty-field formatting is recorded only to the extent preserved in the investigation note. Field meanings are not established.
+
+## Operator's control facts — preserve without relabelling
+- At volume 0 mL: pH = 9.363.
+- CO1 = -0.3098 mg (approximately -0.3 mg).
+- The operator clarified that 0.5, 1 and 2 are volume values in the relevant observations, and the third number is CO1.
+- Do not confuse volume, pH and CO1. Do not treat the following manual labels as validated mapping.
+
+Manual observation lines as pasted (operator warned that the labels may be confused):
+```text
+[Ручное показание №1] 2026-10-19 12:07:25
+pH=0.5 | C01/CO1=9.360 | Объём mL=0.01
+
+[Ручное показание №2] 2026-10-19 12:08:51
+pH=1 | C01/CO1=9.360 | Объём mL=0.3275
+
+[Ручное показание №3] 2026-10-19 12:11:48
+pH=2 | C01/CO1=9.355 | Объём mL=0.9712
+```
+Treat those lines as potentially mislabelled UI/manual annotations, not reliable column assignments.
+
+## Framing facts / cautions
+- Stream starts included records `02 58 36 0D 0A 0D 0A 04` and `02 58 37 0D 0A 0D 0A 04`.
+- Common data-record prefix: `02 4C 61` (ASCII `.La`).
+- Read chunks may split records or contain multiple records. Buffer bytes and parse by confirmed terminators, not by read size.
+- Do not infer numeric encoding, endianness, scale, or field labels from these fragments alone.
+- Do not claim this file contains all 8,178 bytes. It does not.
