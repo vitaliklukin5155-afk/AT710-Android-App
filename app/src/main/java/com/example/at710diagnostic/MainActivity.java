@@ -22,6 +22,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.util.HashMap;
+import java.io.FileInputStream;
 
 public class MainActivity extends Activity {
     private static final String ACTION_USB_PERMISSION = "com.example.at710diagnostic.USB_PERMISSION";
@@ -30,6 +31,7 @@ public class MainActivity extends Activity {
     private boolean receiverRegistered = false;
     private ParcelFileDescriptor accessoryFd;
     private UsbAccessory activeAccessory;
+    private volatile boolean reading = false;
 
     private final BroadcastReceiver permissionReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -68,6 +70,9 @@ public class MainActivity extends Activity {
         Button open = new Button(this);
         open.setText("Разрешить и открыть канал связи");
         layout.addView(open, new LinearLayout.LayoutParams(-1, -2));
+        Button read = new Button(this);
+        read.setText("Начать принимать данные от прибора");
+        layout.addView(read, new LinearLayout.LayoutParams(-1, -2));
         Button copy = new Button(this);
         copy.setText("Копировать весь текст");
         layout.addView(copy, new LinearLayout.LayoutParams(-1, -2));
@@ -88,6 +93,7 @@ public class MainActivity extends Activity {
         }
         scan.setOnClickListener(v -> scanDevices());
         open.setOnClickListener(v -> requestAccessoryAccess());
+        read.setOnClickListener(v -> startReadingAccessory());
         copy.setOnClickListener(v -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard != null) {
@@ -164,12 +170,63 @@ public class MainActivity extends Activity {
                     append("\n-------------------------\n\n");
                 }
             }
-            append("\nЭта версия только диагностирует USB Host и Accessory/ADK. Протокол KEM AT-710 и чтение результатов пока не реализованы.");
+            append("\nПроверка ADK и приём необработанных байтов доступны. Расшифровка протокола KEM AT-710 пока не реализована.");
         } catch (Exception e) {
             append("\nСканирование прервано безопасно: " + e.getClass().getSimpleName() + ". Отключите USB и повторите.");
         } catch (LinkageError e) {
             append("\nОшибка системного USB-компонента: " + e.getClass().getSimpleName());
         }
+    }
+
+
+    private void startReadingAccessory() {
+        if (accessoryFd == null) {
+            append("\nСначала нажмите «Разрешить и открыть канал связи».\n");
+            return;
+        }
+        if (reading) {
+            append("\nПриём данных уже запущен.\n");
+            return;
+        }
+        reading = true;
+        append("\nНачинаю ожидать данные от прибора. Если прибор ничего не передаёт сам, список останется пустым.\n");
+        final ParcelFileDescriptor fd = accessoryFd;
+        Thread reader = new Thread(() -> {
+            FileInputStream input = null;
+            long total = 0;
+            try {
+                input = new FileInputStream(fd.getFileDescriptor());
+                byte[] buffer = new byte[256];
+                while (reading && accessoryFd == fd) {
+                    int count = input.read(buffer);
+                    if (count < 0) {
+                        appendFromWorker("\nПоток данных завершён прибором.\n");
+                        break;
+                    }
+                    if (count == 0) continue;
+                    total += count;
+                    StringBuilder hex = new StringBuilder();
+                    StringBuilder ascii = new StringBuilder();
+                    for (int i = 0; i < count; i++) {
+                        int b = buffer[i] & 0xff;
+                        if (i > 0) hex.append(' ');
+                        hex.append(String.format("%02X", b));
+                        ascii.append(b >= 32 && b <= 126 ? (char)b : '.');
+                    }
+                    appendFromWorker("\nПолучено байт: " + count + " (всего " + total + ")\nHEX: " + hex + "\nТЕКСТ: " + ascii + "\n");
+                }
+            } catch (Exception e) {
+                if (reading) appendFromWorker("\nПриём остановлен: " + e.getClass().getSimpleName() + ". Если канал закрыт, откройте его снова.\n");
+            } finally {
+                reading = false;
+            }
+        }, "AT710-Accessory-Reader");
+        reader.setDaemon(true);
+        reader.start();
+    }
+
+    private void appendFromWorker(String text) {
+        runOnUiThread(() -> append(text));
     }
 
     private void requestAccessoryAccess() {
@@ -237,6 +294,7 @@ public class MainActivity extends Activity {
             try { unregisterReceiver(permissionReceiver); } catch (Exception ignored) {}
             receiverRegistered = false;
         }
+        reading = false;
         if (accessoryFd != null) {
             try { accessoryFd.close(); } catch (Exception ignored) {}
             accessoryFd = null;
