@@ -3,6 +3,8 @@ package com.example.at710diagnostic;
 import android.app.Activity;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -18,6 +20,7 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.util.HashMap;
 
 public class MainActivity extends Activity {
@@ -54,6 +57,9 @@ public class MainActivity extends Activity {
         Button scan = new Button(this);
         scan.setText("Проверить USB ещё раз");
         layout.addView(scan, new LinearLayout.LayoutParams(-1, -2));
+        Button copy = new Button(this);
+        copy.setText("Копировать весь текст");
+        layout.addView(copy, new LinearLayout.LayoutParams(-1, -2));
         output = new TextView(this);
         output.setTextSize(16);
         ScrollView scroll = new ScrollView(this);
@@ -70,6 +76,15 @@ public class MainActivity extends Activity {
             append("Не удалось зарегистрировать обработчик USB-разрешения: " + e.getMessage() + "\n");
         }
         scan.setOnClickListener(v -> scanDevices());
+        copy.setOnClickListener(v -> {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("AT-710 диагностика", output.getText().toString()));
+                Toast.makeText(this, "Весь текст скопирован", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "Не удалось открыть буфер обмена", Toast.LENGTH_SHORT).show();
+            }
+        });
         scanDevices();
     }
 
