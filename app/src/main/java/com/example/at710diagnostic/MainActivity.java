@@ -28,6 +28,9 @@ public class MainActivity extends Activity {
     private static final String ACTION_USB_PERMISSION = "com.example.at710diagnostic.USB_PERMISSION";
     private UsbManager usbManager;
     private TextView output;
+    private TextView livePh;
+    private TextView liveVolume;
+    private TextView liveOther;
     private boolean receiverRegistered = false;
     private ParcelFileDescriptor accessoryFd;
     private UsbAccessory activeAccessory;
@@ -76,6 +79,28 @@ public class MainActivity extends Activity {
         Button copy = new Button(this);
         copy.setText("Копировать весь текст");
         layout.addView(copy, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView liveTitle = new TextView(this);
+        liveTitle.setText("Текущие данные прибора (предварительно)");
+        liveTitle.setTextSize(19);
+        layout.addView(liveTitle, new LinearLayout.LayoutParams(-1, -2));
+        livePh = new TextView(this);
+        livePh.setText("Кандидат pH (поле ha): —");
+        livePh.setTextSize(24);
+        layout.addView(livePh, new LinearLayout.LayoutParams(-1, -2));
+        liveVolume = new TextView(this);
+        liveVolume.setText("Кандидат объёма (поле j): —");
+        liveVolume.setTextSize(20);
+        layout.addView(liveVolume, new LinearLayout.LayoutParams(-1, -2));
+        liveOther = new TextView(this);
+        liveOther.setText("Другие поля: —");
+        liveOther.setTextSize(14);
+        layout.addView(liveOther, new LinearLayout.LayoutParams(-1, -2));
+        TextView liveNote = new TextView(this);
+        liveNote.setText("ВНИМАНИЕ: значения ha и j пока не подтверждены как pH и объём. Сверьте их с экраном титратора.");
+        liveNote.setTextSize(12);
+        layout.addView(liveNote, new LinearLayout.LayoutParams(-1, -2));
+
         output = new TextView(this);
         output.setTextSize(16);
         ScrollView scroll = new ScrollView(this);
@@ -194,6 +219,7 @@ public class MainActivity extends Activity {
         Thread reader = new Thread(() -> {
             FileInputStream input = null;
             long total = 0;
+            StringBuilder incomingText = new StringBuilder();
             try {
                 input = new FileInputStream(fd.getFileDescriptor());
                 byte[] buffer = new byte[256];
@@ -214,6 +240,13 @@ public class MainActivity extends Activity {
                         ascii.append(b >= 32 && b <= 126 ? (char)b : '.');
                     }
                     appendFromWorker("\nПолучено байт: " + count + " (всего " + total + ")\nHEX: " + hex + "\nТЕКСТ: " + ascii + "\n");
+                    for (int i = 0; i < count; i++) {
+                        int b = buffer[i] & 0xff;
+                        if (b == 0x02 || b == 0x04 || b == 0x0D || b == 0x0A) incomingText.append('\n');
+                        else if (b >= 32 && b <= 126) incomingText.append((char)b);
+                    }
+                    if (incomingText.length() > 20000) incomingText.delete(0, incomingText.length() - 12000);
+                    updateLiveValues(incomingText.toString());
                 }
             } catch (Exception e) {
                 if (reading) appendFromWorker("\nПриём остановлен: " + e.getClass().getSimpleName() + ". Если канал закрыт, откройте его снова.\n");
@@ -227,6 +260,40 @@ public class MainActivity extends Activity {
 
     private void appendFromWorker(String text) {
         runOnUiThread(() -> append(text));
+    }
+
+    private String latestField(String data, String field) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+            .compile("(?m)^\\s*" + java.util.regex.Pattern.quote(field) + "\\s+([^\\r\\n]+)")
+            .matcher(data);
+        String found = null;
+        while (matcher.find()) {
+            String candidate = matcher.group(1).trim();
+            java.util.regex.Matcher number = java.util.regex.Pattern.compile("[-+]?[0-9]+(?:\\.[0-9]+)?").matcher(candidate);
+            if (number.find()) found = number.group();
+        }
+        return found;
+    }
+
+    private void updateLiveValues(String data) {
+        String ha = latestField(data, "ha");
+        String hb = latestField(data, "hb");
+        String iValue = latestField(data, "i");
+        String jValue = latestField(data, "j");
+        String kValue = latestField(data, "k");
+        String lValue = latestField(data, "l");
+        runOnUiThread(() -> {
+            if (livePh != null && ha != null) livePh.setText("Кандидат pH (ha): " + ha);
+            if (liveVolume != null && jValue != null) liveVolume.setText("Кандидат объёма (j): " + jValue);
+            if (liveOther != null) {
+                StringBuilder other = new StringBuilder("Другие поля: ");
+                if (hb != null) other.append("hb=").append(hb).append("  ");
+                if (iValue != null) other.append("i=").append(iValue).append("  ");
+                if (kValue != null) other.append("k=").append(kValue).append("  ");
+                if (lValue != null) other.append("l=").append(lValue);
+                liveOther.setText(other.toString());
+            }
+        });
     }
 
     private void requestAccessoryAccess() {
