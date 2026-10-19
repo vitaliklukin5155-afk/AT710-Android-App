@@ -34,6 +34,12 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.HashMap;
 import java.io.FileInputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.BufferedWriter;
+import java.io.OutputStreamWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 
 public class MainActivity extends Activity {
     private static final String ACTION_USB_PERMISSION = "com.example.at710diagnostic.USB_PERMISSION";
@@ -46,6 +52,31 @@ public class MainActivity extends Activity {
     private ParcelFileDescriptor accessoryFd;
     private UsbAccessory activeAccessory;
     private volatile boolean reading = false;
+    private final Handler ioStatusHandler = new Handler(Looper.getMainLooper());
+    private volatile long readerStartedMs = 0L;
+    private volatile long lastReceivedMs = 0L;
+    private volatile long receivedBytesTotal = 0L;
+    private File rawLogFile;
+    private BufferedWriter rawLogWriter;
+    private Button startSessionButton;
+    private Button finishSessionButton;
+    private boolean sessionActive = false;
+    private String sessionStartedAt = "";
+    private final Runnable ioStatusRunnable = new Runnable() {
+        @Override public void run() {
+            if (!reading) return;
+            long now = android.os.SystemClock.elapsedRealtime();
+            long elapsedSec = Math.max(0L, (now - readerStartedMs) / 1000L);
+            long quietSec = receivedBytesTotal == 0L
+                ? elapsedSec
+                : Math.max(0L, (now - lastReceivedMs) / 1000L);
+            String status = receivedBytesTotal == 0L
+                ? "\n[USB-СТАТУС] Поток чтения работает " + elapsedSec + " с; получено 0 байт. Прибор пока ничего не передал. Команды не отправляются.\n"
+                : "\n[USB-СТАТУС] Получено всего " + receivedBytesTotal + " байт; тишина " + quietSec + " с.\n";
+            append(status);
+            ioStatusHandler.postDelayed(this, 5000L);
+        }
+    };
     private final Handler manualHandler = new Handler(Looper.getMainLooper());
     private long manualStartMs = 0L;
     private int manualPromptIndex = -1;
@@ -107,15 +138,22 @@ public class MainActivity extends Activity {
         Button open = new Button(this);
         open.setText("Разрешить и открыть канал связи");
         layout.addView(open, new LinearLayout.LayoutParams(-1, -2));
-        Button read = new Button(this);
-        read.setText("Начать принимать данные от прибора");
-        layout.addView(read, new LinearLayout.LayoutParams(-1, -2));
+        startSessionButton = new Button(this);
+        startSessionButton.setText("СТАРТ ТИТРОВАНИЯ — начать запись USB");
+        layout.addView(startSessionButton, new LinearLayout.LayoutParams(-1, -2));
+        finishSessionButton = new Button(this);
+        finishSessionButton.setText("ЗАВЕРШИТЬ ТИТРОВАНИЕ — оформить результат");
+        finishSessionButton.setEnabled(false);
+        layout.addView(finishSessionButton, new LinearLayout.LayoutParams(-1, -2));
         Button manual = new Button(this);
         manual.setText("Ручной сбор показаний с подсказками");
         layout.addView(manual, new LinearLayout.LayoutParams(-1, -2));
         Button copy = new Button(this);
         copy.setText("Копировать весь текст");
         layout.addView(copy, new LinearLayout.LayoutParams(-1, -2));
+        Button exportRaw = new Button(this);
+        exportRaw.setText("Поделиться последним USB-журналом");
+        layout.addView(exportRaw, new LinearLayout.LayoutParams(-1, -2));
 
         TextView liveTitle = new TextView(this);
         liveTitle.setText("Текущие данные прибора (предварительно)");
@@ -171,11 +209,13 @@ public class MainActivity extends Activity {
             append("Не удалось зарегистрировать обработчик USB-разрешения: " + e.getMessage() + "\n");
         }
         scan.setOnClickListener(v -> scanDevices());
+        exportRaw.setOnClickListener(v -> shareRawLog());
         saveManual.setOnClickListener(v -> saveManualReading());
         startGuide.setOnClickListener(v -> { guideActive = true; guideStage = 0; guideHandler.removeCallbacks(guideRunnable); if (guideText != null) guideText.setText("Начало наблюдения: перепиши pH, C01/CO1 и объём с экрана, затем сохрани. Новая подсказка через 30 секунд."); guideHandler.postDelayed(guideRunnable, 30000); append("\nНачаты ручные подсказки каждые 30 секунд.\n"); });
         stopGuide.setOnClickListener(v -> { guideActive = false; guideHandler.removeCallbacks(guideRunnable); if (guideText != null) guideText.setText("Подсказки остановлены. Записи остаются в журнале на экране."); append("\nПодсказки остановлены.\n"); });
         open.setOnClickListener(v -> requestAccessoryAccess());
-        read.setOnClickListener(v -> startReadingAccessory());
+        startSessionButton.setOnClickListener(v -> startTitrationSession());
+        finishSessionButton.setOnClickListener(v -> finishTitrationSession());
         manual.setOnClickListener(v -> startManualObservation());
         copy.setOnClickListener(v -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -317,6 +357,115 @@ public class MainActivity extends Activity {
         manualVolumeInput.setText("");
     }
 
+    private void startTitrationSession() {
+        if (sessionActive) {
+            Toast.makeText(this, "Титрование уже записывается.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (accessoryFd == null) {
+            append("\nСначала нажмите «Разрешить и открыть канал связи», затем «СТАРТ ТИТРОВАНИЯ».\n");
+            Toast.makeText(this, "Сначала откройте USB-канал.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        sessionActive = true;
+        sessionStartedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+        if (startSessionButton != null) startSessionButton.setEnabled(false);
+        if (finishSessionButton != null) finishSessionButton.setEnabled(true);
+        append("\n===== СТАРТ ТИТРОВАНИЯ: " + sessionStartedAt + " =====\n");
+        startReadingAccessory();
+    }
+
+    private void finishTitrationSession() {
+        if (!sessionActive) {
+            Toast.makeText(this, "Сначала нажмите «СТАРТ ТИТРОВАНИЯ».", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        sessionActive = false;
+        String finishedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+        append("\n===== ЗАВЕРШЕНИЕ ТИТРОВАНИЯ: " + finishedAt + " =====\n");
+        synchronized (this) {
+            if (rawLogWriter != null) {
+                try {
+                    rawLogWriter.write("# TITRATION_SESSION_FINISHED " + finishedAt + "\n");
+                    rawLogWriter.flush();
+                    rawLogWriter.close();
+                } catch (IOException ignored) {}
+                rawLogWriter = null;
+            }
+        }
+        reading = false;
+        ioStatusHandler.removeCallbacks(ioStatusRunnable);
+        if (accessoryFd != null) {
+            try { accessoryFd.close(); } catch (IOException ignored) {}
+            accessoryFd = null;
+        }
+        if (startSessionButton != null) startSessionButton.setEnabled(true);
+        if (finishSessionButton != null) finishSessionButton.setEnabled(false);
+        showEditableResult(finishedAt);
+    }
+
+    private void showEditableResult(String finishedAt) {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        panel.setPadding(pad, pad, pad, pad);
+        TextView note = new TextView(this);
+        note.setText("Заполните только те поля, которые доступны в результате прибора. Исходный USB-журнал сохраняется отдельно; редактирование ниже не изменяет исходные байты.");
+        panel.addView(note);
+        EditText sample = new EditText(this); sample.setSingleLine(true); sample.setHint("Образец / номер анализа"); panel.addView(sample);
+        EditText acid = new EditText(this); acid.setSingleLine(true); acid.setHint("Кислотное число"); acid.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED); panel.addView(acid);
+        EditText unit = new EditText(this); unit.setSingleLine(true); unit.setHint("Единицы измерения (например, mg KOH/g)"); panel.addView(unit);
+        EditText mass = new EditText(this); mass.setSingleLine(true); mass.setHint("Масса навески, г (если известна)"); mass.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL); panel.addView(mass);
+        EditText titrant = new EditText(this); titrant.setSingleLine(true); titrant.setHint("Концентрация титранта (если известна)"); titrant.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL); panel.addView(titrant);
+        EditText comment = new EditText(this); comment.setHint("Комментарий / возможные мешающие факторы"); comment.setMinLines(2); panel.addView(comment);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Результат титрования — редактирование").setView(panel).setNegativeButton("Отмена", (d,w)->{}).setPositiveButton("Сохранить результат", null).create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
+            String resultTime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+            String record = "\n===== РЕЗУЛЬТАТ ТИТРОВАНИЯ =====\nНачало: " + sessionStartedAt + "\nКонец: " + finishedAt + "\nСохранено: " + resultTime + "\nОбразец: " + emptyAsDash(sample.getText().toString()) + "\nКислотное число: " + emptyAsDash(acid.getText().toString()) + "\nЕдиницы: " + emptyAsDash(unit.getText().toString()) + "\nМасса навески, г: " + emptyAsDash(mass.getText().toString()) + "\nКонцентрация титранта: " + emptyAsDash(titrant.getText().toString()) + "\nКомментарий: " + emptyAsDash(comment.getText().toString()) + "\nИсходный USB-журнал: " + (rawLogFile == null ? "не создан" : rawLogFile.getAbsolutePath()) + "\n";
+            append(record);
+            try {
+                File resultFile = new File(getFilesDir(), "AT710_result_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".txt");
+                FileOutputStream out = new FileOutputStream(resultFile);
+                out.write(record.getBytes("UTF-8"));
+                out.close();
+                append("Файл результата сохранён: " + resultFile.getAbsolutePath() + "\n");
+                Toast.makeText(this, "Результат сохранён на телефоне.", Toast.LENGTH_LONG).show();
+            } catch (IOException e) {
+                Toast.makeText(this, "Не удалось сохранить файл результата: " + e.getClass().getSimpleName(), Toast.LENGTH_LONG).show();
+            }
+            dialog.dismiss();
+        }));
+        dialog.show();
+    }
+
+    private String emptyAsDash(String value) {
+        String v = value == null ? "" : value.trim();
+        return v.isEmpty() ? "—" : v;
+    }
+
+    private void shareRawLog() {
+        if (rawLogFile == null || !rawLogFile.exists()) {
+            Toast.makeText(this, "USB-журнал ещё не создан. Сначала начни приём данных.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            FileInputStream in = new FileInputStream(rawLogFile);
+            byte[] buffer = new byte[4096];
+            int n;
+            while ((n = in.read(buffer)) != -1) bytes.write(buffer, 0, n);
+            in.close();
+            String contents = bytes.toString("UTF-8");
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("text/plain");
+            send.putExtra(Intent.EXTRA_SUBJECT, rawLogFile.getName());
+            send.putExtra(Intent.EXTRA_TEXT, contents);
+            startActivity(Intent.createChooser(send, "Отправить USB-журнал AT-710"));
+        } catch (Exception e) {
+            Toast.makeText(this, "Не удалось подготовить журнал: " + e.getClass().getSimpleName(), Toast.LENGTH_LONG).show();
+        }
+    }
+
     private void append(String text) {
         if (output != null) output.append(text);
     }
@@ -413,7 +562,24 @@ public class MainActivity extends Activity {
             return;
         }
         reading = true;
-        append("\nНачинаю ожидать данные от прибора. Если прибор ничего не передаёт сам, список останется пустым.\n");
+        readerStartedMs = android.os.SystemClock.elapsedRealtime();
+        lastReceivedMs = readerStartedMs;
+        receivedBytesTotal = 0L;
+        ioStatusHandler.removeCallbacks(ioStatusRunnable);
+        try {
+            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+            rawLogFile = new File(getFilesDir(), "AT710_USB_" + stamp + ".log");
+            rawLogWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(rawLogFile, true), "UTF-8"));
+            rawLogWriter.write("# AT-710 raw USB/ADK capture started " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date()) + "\n");
+            rawLogWriter.flush();
+            append("\nФайл автоматической записи: " + rawLogFile.getAbsolutePath() + "\n");
+        } catch (IOException e) {
+            rawLogFile = null;
+            rawLogWriter = null;
+            append("\nПРЕДУПРЕЖДЕНИЕ: не удалось создать файл USB-журнала: " + e.getClass().getSimpleName() + "\n");
+        }
+        append("\nНачинаю пассивное чтение Android Accessory. Все полученные байты будут автоматически записываться в журнал. Команды титратору не отправляются.\n");
+        ioStatusHandler.postDelayed(ioStatusRunnable, 5000L);
         final ParcelFileDescriptor fd = accessoryFd;
         Thread reader = new Thread(() -> {
             FileInputStream input = null;
@@ -430,6 +596,8 @@ public class MainActivity extends Activity {
                     }
                     if (count == 0) continue;
                     total += count;
+                    receivedBytesTotal = total;
+                    lastReceivedMs = android.os.SystemClock.elapsedRealtime();
                     StringBuilder hex = new StringBuilder();
                     StringBuilder ascii = new StringBuilder();
                     for (int i = 0; i < count; i++) {
@@ -437,6 +605,17 @@ public class MainActivity extends Activity {
                         if (i > 0) hex.append(' ');
                         hex.append(String.format("%02X", b));
                         ascii.append(b >= 32 && b <= 126 ? (char)b : '.');
+                    }
+                    String chunkTime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
+                    synchronized (this) {
+                        if (rawLogWriter != null) {
+                            try {
+                                rawLogWriter.write("[" + chunkTime + "] bytes=" + count + " total=" + total + " HEX=" + hex + " TEXT=" + ascii + "\n");
+                                rawLogWriter.flush();
+                            } catch (IOException logError) {
+                                appendFromWorker("\nОШИБКА ЗАПИСИ USB-ЖУРНАЛА: " + logError.getClass().getSimpleName() + "\n");
+                            }
+                        }
                     }
                     appendFromWorker("\nПолучено байт: " + count + " (всего " + total + ")\nHEX: " + hex + "\nТЕКСТ: " + ascii + "\n");
                     for (int i = 0; i < count; i++) {
@@ -451,6 +630,18 @@ public class MainActivity extends Activity {
                 if (reading) appendFromWorker("\nПриём остановлен: " + e.getClass().getSimpleName() + ". Если канал закрыт, откройте его снова.\n");
             } finally {
                 reading = false;
+                ioStatusHandler.removeCallbacks(ioStatusRunnable);
+                synchronized (this) {
+                    if (rawLogWriter != null) {
+                        try {
+                            rawLogWriter.write("# Capture stopped " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()) + "; totalBytes=" + total + "\n");
+                            rawLogWriter.flush();
+                            rawLogWriter.close();
+                        } catch (IOException ignored) {}
+                        rawLogWriter = null;
+                    }
+                }
+                appendFromWorker("\n[USB-СТАТУС] Поток чтения остановлен. Всего получено байт: " + total + ".\n");
             }
         }, "AT710-Accessory-Reader");
         reader.setDaemon(true);
