@@ -28,15 +28,23 @@ public class MainActivity extends Activity {
     private UsbManager usbManager;
     private TextView output;
     private boolean receiverRegistered = false;
+    private ParcelFileDescriptor accessoryFd;
+    private UsbAccessory activeAccessory;
 
     private final BroadcastReceiver permissionReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             try {
                 if (ACTION_USB_PERMISSION.equals(intent.getAction())) {
-                    UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
                     boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
-                    append("\nРазрешение USB: " + (granted ? "получено" : "отклонено"));
-                    if (device != null && granted) append("\nУстройство доступно. Протокол прибора пока не реализован.");
+                    UsbAccessory accessory = intent.getParcelableExtra(UsbManager.EXTRA_ACCESSORY);
+                    UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                    append("\nРазрешение Android: " + (granted ? "получено" : "отклонено"));
+                    if (accessory != null) {
+                        if (granted) openAccessoryChannel(accessory);
+                        else append("\nДоступ к Android Accessory не разрешён. Нажмите кнопку открытия канала и разрешите доступ.");
+                    } else if (device != null && granted) {
+                        append("\nРазрешение для USB Host получено. Нажмите «Проверить USB ещё раз».");
+                    }
                 }
             } catch (Exception e) {
                 append("\nОшибка обработки USB-разрешения: " + e.getClass().getSimpleName());
@@ -57,6 +65,9 @@ public class MainActivity extends Activity {
         Button scan = new Button(this);
         scan.setText("Проверить USB ещё раз");
         layout.addView(scan, new LinearLayout.LayoutParams(-1, -2));
+        Button open = new Button(this);
+        open.setText("Разрешить и открыть канал связи");
+        layout.addView(open, new LinearLayout.LayoutParams(-1, -2));
         Button copy = new Button(this);
         copy.setText("Копировать весь текст");
         layout.addView(copy, new LinearLayout.LayoutParams(-1, -2));
@@ -76,6 +87,7 @@ public class MainActivity extends Activity {
             append("Не удалось зарегистрировать обработчик USB-разрешения: " + e.getMessage() + "\n");
         }
         scan.setOnClickListener(v -> scanDevices());
+        open.setOnClickListener(v -> requestAccessoryAccess());
         copy.setOnClickListener(v -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard != null) {
@@ -110,7 +122,11 @@ public class MainActivity extends Activity {
                         append("Производитель: " + safe(accessory.getManufacturer()) + "\n");
                         append("Модель: " + safe(accessory.getModel()) + "\n");
                         append("Версия: " + safe(accessory.getVersion()) + "\n");
-                        append("Accessory обнаружен; канал не открываем без отдельного разрешения Android.\n");
+                        if (usbManager.hasPermission(accessory)) {
+                            append("Разрешение уже есть. Можно открыть канал кнопкой выше.\n");
+                        } else {
+                            append("Нужно запросить разрешение Android кнопкой выше.\n");
+                        }
                     } catch (Exception e) {
                         append("Ошибка accessory: " + e.getClass().getSimpleName() + "\n");
                     } finally {
@@ -156,12 +172,74 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void requestAccessoryAccess() {
+        try {
+            UsbAccessory[] accessories = usbManager == null ? null : usbManager.getAccessoryList();
+            if (accessories == null || accessories.length == 0) {
+                append("\nAndroid Accessory не найден. Проверьте подключение кабеля и нажмите «Проверить USB ещё раз».\n");
+                return;
+            }
+            UsbAccessory accessory = accessories[0];
+            activeAccessory = accessory;
+            if (usbManager.hasPermission(accessory)) {
+                append("\nРазрешение уже получено. Открываю канал…\n");
+                openAccessoryChannel(accessory);
+            } else {
+                Intent intent = new Intent(ACTION_USB_PERMISSION);
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+                PendingIntent pi = PendingIntent.getBroadcast(this, 710, intent, flags);
+                usbManager.requestPermission(accessory, pi);
+                append("\nНа экране телефона должно появиться окно разрешения. Нажмите «Разрешить».\n");
+            }
+        } catch (SecurityException e) {
+            append("\nAndroid запретил запрос доступа (SecurityException). Закройте приложение, отключите кабель, подключите снова и повторите.\n");
+        } catch (Exception e) {
+            append("\nНе удалось запросить доступ: " + e.getClass().getSimpleName() + ".\n");
+        }
+    }
+
+    private void openAccessoryChannel(UsbAccessory accessory) {
+        ParcelFileDescriptor newFd = null;
+        try {
+            if (usbManager == null || accessory == null) {
+                append("\nКанал не открыт: аксессуар недоступен.\n");
+                return;
+            }
+            if (accessoryFd != null) {
+                try { accessoryFd.close(); } catch (Exception ignored) {}
+                accessoryFd = null;
+            }
+            newFd = usbManager.openAccessory(accessory);
+            if (newFd == null) {
+                append("\nAndroid не открыл канал (openAccessory вернул null).\n");
+                append("Это пока не ошибка протокола: связь ещё не установлена.\n");
+                return;
+            }
+            accessoryFd = newFd;
+            activeAccessory = accessory;
+            append("\nУСПЕХ: Android открыл канал Android Accessory!\n");
+            append("Канал оставлен открытым. Чтение и разбор результатов KEM AT-710 ещё не реализованы.\n");
+        } catch (SecurityException e) {
+            if (newFd != null) try { newFd.close(); } catch (Exception ignored) {}
+            append("\nSecurityException при открытии канала. Приложение не должно вылетать.\n");
+            append("Android не выдал приложению доступ к аксессуару; скопируйте этот текст для диагностики.\n");
+        } catch (Exception e) {
+            if (newFd != null) try { newFd.close(); } catch (Exception ignored) {}
+            append("\nНе удалось открыть канал: " + e.getClass().getSimpleName() + ".\n");
+        }
+    }
+
     private String safe(String value) { return value == null || value.isEmpty() ? "(не указано)" : value; }
 
     @Override protected void onDestroy() {
         if (receiverRegistered) {
             try { unregisterReceiver(permissionReceiver); } catch (Exception ignored) {}
             receiverRegistered = false;
+        }
+        if (accessoryFd != null) {
+            try { accessoryFd.close(); } catch (Exception ignored) {}
+            accessoryFd = null;
         }
         super.onDestroy();
     }
