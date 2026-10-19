@@ -17,10 +17,16 @@ import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.os.Handler;
+import android.os.Looper;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 import java.util.HashMap;
 import java.io.FileInputStream;
 
@@ -35,6 +41,13 @@ public class MainActivity extends Activity {
     private ParcelFileDescriptor accessoryFd;
     private UsbAccessory activeAccessory;
     private volatile boolean reading = false;
+    private EditText manualPh, manualCo1, manualVolume, manualNote;
+    private TextView guideText;
+    private final Handler guideHandler = new Handler(Looper.getMainLooper());
+    private boolean guideActive = false;
+    private int manualReadingCount = 0;
+    private int guideStage = 0;
+    private final Runnable guideRunnable = new Runnable() { public void run() { if (!guideActive) return; guideStage++; if (guideText != null) guideText.setText("Подсказка " + guideStage + ": перепиши с экрана pH, C01/CO1 и объём титранта. Затем нажми «Сохранить показание». Следующая подсказка через 30 секунд."); guideHandler.postDelayed(this, 30000); } };
 
     private final BroadcastReceiver permissionReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -101,6 +114,23 @@ public class MainActivity extends Activity {
         liveNote.setTextSize(12);
         layout.addView(liveNote, new LinearLayout.LayoutParams(-1, -2));
 
+        TextView manualTitle = new TextView(this);
+        manualTitle.setText("\nРучная запись показаний с экрана титратора");
+        manualTitle.setTextSize(19);
+        layout.addView(manualTitle, new LinearLayout.LayoutParams(-1, -2));
+        TextView manualHelp = new TextView(this);
+        manualHelp.setText("Пока протокол не подтверждён, вводи значения прямо с экрана AT-710. Перед запуском титрования запиши исходные значения; во время титрования сохраняй показания по подсказкам. Время запишется автоматически.");
+        manualHelp.setTextSize(14);
+        layout.addView(manualHelp, new LinearLayout.LayoutParams(-1, -2));
+        manualPh = new EditText(this); manualPh.setSingleLine(true); manualPh.setHint("pH с экрана"); manualPh.setInputType(8194); layout.addView(manualPh, new LinearLayout.LayoutParams(-1, -2));
+        manualCo1 = new EditText(this); manualCo1.setSingleLine(true); manualCo1.setHint("C01 / CO1 — значение с экрана"); manualCo1.setInputType(8194); layout.addView(manualCo1, new LinearLayout.LayoutParams(-1, -2));
+        manualVolume = new EditText(this); manualVolume.setSingleLine(true); manualVolume.setHint("Объём титранта, mL (если есть)"); manualVolume.setInputType(8194); layout.addView(manualVolume, new LinearLayout.LayoutParams(-1, -2));
+        manualNote = new EditText(this); manualNote.setSingleLine(true); manualNote.setHint("Примечание: до старта / титрование / конец"); layout.addView(manualNote, new LinearLayout.LayoutParams(-1, -2));
+        guideText = new TextView(this); guideText.setText("Подсказки остановлены. Введи показания с экрана."); guideText.setTextSize(14); layout.addView(guideText, new LinearLayout.LayoutParams(-1, -2));
+        Button saveManual = new Button(this); saveManual.setText("Сохранить показание с текущим временем"); layout.addView(saveManual, new LinearLayout.LayoutParams(-1, -2));
+        Button startGuide = new Button(this); startGuide.setText("Начать подсказки каждые 30 секунд"); layout.addView(startGuide, new LinearLayout.LayoutParams(-1, -2));
+        Button stopGuide = new Button(this); stopGuide.setText("Остановить подсказки"); layout.addView(stopGuide, new LinearLayout.LayoutParams(-1, -2));
+
         output = new TextView(this);
         output.setTextSize(16);
         ScrollView scroll = new ScrollView(this);
@@ -117,6 +147,9 @@ public class MainActivity extends Activity {
             append("Не удалось зарегистрировать обработчик USB-разрешения: " + e.getMessage() + "\n");
         }
         scan.setOnClickListener(v -> scanDevices());
+        saveManual.setOnClickListener(v -> saveManualReading());
+        startGuide.setOnClickListener(v -> { guideActive = true; guideStage = 0; guideHandler.removeCallbacks(guideRunnable); if (guideText != null) guideText.setText("Начало наблюдения: перепиши pH, C01/CO1 и объём с экрана, затем сохрани. Новая подсказка через 30 секунд."); guideHandler.postDelayed(guideRunnable, 30000); append("\nНачаты ручные подсказки каждые 30 секунд.\n"); });
+        stopGuide.setOnClickListener(v -> { guideActive = false; guideHandler.removeCallbacks(guideRunnable); if (guideText != null) guideText.setText("Подсказки остановлены. Записи остаются в журнале на экране."); append("\nПодсказки остановлены.\n"); });
         open.setOnClickListener(v -> requestAccessoryAccess());
         read.setOnClickListener(v -> startReadingAccessory());
         copy.setOnClickListener(v -> {
@@ -133,6 +166,19 @@ public class MainActivity extends Activity {
 
     private void append(String text) {
         if (output != null) output.append(text);
+    }
+
+    private void saveManualReading() {
+        String ph = manualPh == null ? "" : manualPh.getText().toString().trim();
+        String co1 = manualCo1 == null ? "" : manualCo1.getText().toString().trim();
+        String volume = manualVolume == null ? "" : manualVolume.getText().toString().trim();
+        String note = manualNote == null ? "" : manualNote.getText().toString().trim();
+        if (ph.isEmpty() && co1.isEmpty() && volume.isEmpty()) { Toast.makeText(this, "Введи хотя бы одно значение", Toast.LENGTH_LONG).show(); return; }
+        String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+        manualReadingCount++;
+        append("\n[Ручное показание №" + manualReadingCount + "] " + time + "\npH=" + (ph.isEmpty() ? "не записан" : ph) + " | C01/CO1=" + (co1.isEmpty() ? "не записан" : co1) + " | Объём mL=" + (volume.isEmpty() ? "не записан" : volume) + "\nПримечание: " + (note.isEmpty() ? "—" : note) + "\n");
+        Toast.makeText(this, "Показание записано в журнал на экране", Toast.LENGTH_SHORT).show();
+        if (guideText != null && guideActive) guideText.setText("Показание №" + manualReadingCount + " записано. Следующая подсказка через 30 секунд.");
     }
 
     private void scanDevices() {
@@ -362,6 +408,8 @@ public class MainActivity extends Activity {
             receiverRegistered = false;
         }
         reading = false;
+        guideActive = false;
+        guideHandler.removeCallbacks(guideRunnable);
         if (accessoryFd != null) {
             try { accessoryFd.close(); } catch (Exception ignored) {}
             accessoryFd = null;
