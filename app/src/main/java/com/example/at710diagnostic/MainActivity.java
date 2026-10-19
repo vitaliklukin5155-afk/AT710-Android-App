@@ -58,6 +58,10 @@ public class MainActivity extends Activity {
     private volatile long receivedBytesTotal = 0L;
     private File rawLogFile;
     private BufferedWriter rawLogWriter;
+    private Button startSessionButton;
+    private Button finishSessionButton;
+    private boolean sessionActive = false;
+    private String sessionStartedAt = "";
     private final Runnable ioStatusRunnable = new Runnable() {
         @Override public void run() {
             if (!reading) return;
@@ -134,9 +138,13 @@ public class MainActivity extends Activity {
         Button open = new Button(this);
         open.setText("Разрешить и открыть канал связи");
         layout.addView(open, new LinearLayout.LayoutParams(-1, -2));
-        Button read = new Button(this);
-        read.setText("Начать принимать данные от прибора");
-        layout.addView(read, new LinearLayout.LayoutParams(-1, -2));
+        startSessionButton = new Button(this);
+        startSessionButton.setText("СТАРТ ТИТРОВАНИЯ — начать запись USB");
+        layout.addView(startSessionButton, new LinearLayout.LayoutParams(-1, -2));
+        finishSessionButton = new Button(this);
+        finishSessionButton.setText("ЗАВЕРШИТЬ ТИТРОВАНИЕ — оформить результат");
+        finishSessionButton.setEnabled(false);
+        layout.addView(finishSessionButton, new LinearLayout.LayoutParams(-1, -2));
         Button manual = new Button(this);
         manual.setText("Ручной сбор показаний с подсказками");
         layout.addView(manual, new LinearLayout.LayoutParams(-1, -2));
@@ -206,7 +214,8 @@ public class MainActivity extends Activity {
         startGuide.setOnClickListener(v -> { guideActive = true; guideStage = 0; guideHandler.removeCallbacks(guideRunnable); if (guideText != null) guideText.setText("Начало наблюдения: перепиши pH, C01/CO1 и объём с экрана, затем сохрани. Новая подсказка через 30 секунд."); guideHandler.postDelayed(guideRunnable, 30000); append("\nНачаты ручные подсказки каждые 30 секунд.\n"); });
         stopGuide.setOnClickListener(v -> { guideActive = false; guideHandler.removeCallbacks(guideRunnable); if (guideText != null) guideText.setText("Подсказки остановлены. Записи остаются в журнале на экране."); append("\nПодсказки остановлены.\n"); });
         open.setOnClickListener(v -> requestAccessoryAccess());
-        read.setOnClickListener(v -> startReadingAccessory());
+        startSessionButton.setOnClickListener(v -> startTitrationSession());
+        finishSessionButton.setOnClickListener(v -> finishTitrationSession());
         manual.setOnClickListener(v -> startManualObservation());
         copy.setOnClickListener(v -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -346,6 +355,92 @@ public class MainActivity extends Activity {
         manualPhInput.setText("");
         manualCo1Input.setText("");
         manualVolumeInput.setText("");
+    }
+
+    private void startTitrationSession() {
+        if (sessionActive) {
+            Toast.makeText(this, "Титрование уже записывается.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (accessoryFd == null) {
+            append("\\nСначала нажмите «Разрешить и открыть канал связи», затем «СТАРТ ТИТРОВАНИЯ».\\n");
+            Toast.makeText(this, "Сначала откройте USB-канал.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        sessionActive = true;
+        sessionStartedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+        if (startSessionButton != null) startSessionButton.setEnabled(false);
+        if (finishSessionButton != null) finishSessionButton.setEnabled(true);
+        append("\\n===== СТАРТ ТИТРОВАНИЯ: " + sessionStartedAt + " =====\\n");
+        startReadingAccessory();
+    }
+
+    private void finishTitrationSession() {
+        if (!sessionActive) {
+            Toast.makeText(this, "Сначала нажмите «СТАРТ ТИТРОВАНИЯ».", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        sessionActive = false;
+        String finishedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+        append("\\n===== ЗАВЕРШЕНИЕ ТИТРОВАНИЯ: " + finishedAt + " =====\\n");
+        synchronized (this) {
+            if (rawLogWriter != null) {
+                try {
+                    rawLogWriter.write("# TITRATION_SESSION_FINISHED " + finishedAt + "\\n");
+                    rawLogWriter.flush();
+                    rawLogWriter.close();
+                } catch (IOException ignored) {}
+                rawLogWriter = null;
+            }
+        }
+        reading = false;
+        ioStatusHandler.removeCallbacks(ioStatusRunnable);
+        if (accessoryFd != null) {
+            try { accessoryFd.close(); } catch (IOException ignored) {}
+            accessoryFd = null;
+        }
+        if (startSessionButton != null) startSessionButton.setEnabled(true);
+        if (finishSessionButton != null) finishSessionButton.setEnabled(false);
+        showEditableResult(finishedAt);
+    }
+
+    private void showEditableResult(String finishedAt) {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        panel.setPadding(pad, pad, pad, pad);
+        TextView note = new TextView(this);
+        note.setText("Заполните только те поля, которые доступны в результате прибора. Исходный USB-журнал сохраняется отдельно; редактирование ниже не изменяет исходные байты.");
+        panel.addView(note);
+        EditText sample = new EditText(this); sample.setSingleLine(true); sample.setHint("Образец / номер анализа"); panel.addView(sample);
+        EditText acid = new EditText(this); acid.setSingleLine(true); acid.setHint("Кислотное число"); acid.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED); panel.addView(acid);
+        EditText unit = new EditText(this); unit.setSingleLine(true); unit.setHint("Единицы измерения (например, mg KOH/g)"); panel.addView(unit);
+        EditText mass = new EditText(this); mass.setSingleLine(true); mass.setHint("Масса навески, г (если известна)"); mass.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL); panel.addView(mass);
+        EditText titrant = new EditText(this); titrant.setSingleLine(true); titrant.setHint("Концентрация титранта (если известна)"); titrant.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL); panel.addView(titrant);
+        EditText comment = new EditText(this); comment.setHint("Комментарий / возможные мешающие факторы"); comment.setMinLines(2); panel.addView(comment);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Результат титрования — редактирование").setView(panel).setNegativeButton("Отмена", (d,w)->{}).setPositiveButton("Сохранить результат", null).create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
+            String resultTime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+            String record = "\\n===== РЕЗУЛЬТАТ ТИТРОВАНИЯ =====\\nНачало: " + sessionStartedAt + "\\nКонец: " + finishedAt + "\\nСохранено: " + resultTime + "\\nОбразец: " + emptyAsDash(sample.getText().toString()) + "\\nКислотное число: " + emptyAsDash(acid.getText().toString()) + "\\nЕдиницы: " + emptyAsDash(unit.getText().toString()) + "\\nМасса навески, г: " + emptyAsDash(mass.getText().toString()) + "\\nКонцентрация титранта: " + emptyAsDash(titrant.getText().toString()) + "\\nКомментарий: " + emptyAsDash(comment.getText().toString()) + "\\nИсходный USB-журнал: " + (rawLogFile == null ? "не создан" : rawLogFile.getAbsolutePath()) + "\\n";
+            append(record);
+            try {
+                File resultFile = new File(getFilesDir(), "AT710_result_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".txt");
+                FileOutputStream out = new FileOutputStream(resultFile);
+                out.write(record.getBytes("UTF-8"));
+                out.close();
+                append("Файл результата сохранён: " + resultFile.getAbsolutePath() + "\\n");
+                Toast.makeText(this, "Результат сохранён на телефоне.", Toast.LENGTH_LONG).show();
+            } catch (IOException e) {
+                Toast.makeText(this, "Не удалось сохранить файл результата: " + e.getClass().getSimpleName(), Toast.LENGTH_LONG).show();
+            }
+            dialog.dismiss();
+        }));
+        dialog.show();
+    }
+
+    private String emptyAsDash(String value) {
+        String v = value == null ? "" : value.trim();
+        return v.isEmpty() ? "—" : v;
     }
 
     private void shareRawLog() {
