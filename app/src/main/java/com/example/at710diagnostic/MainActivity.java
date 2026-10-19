@@ -1,6 +1,7 @@
 package com.example.at710diagnostic;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
@@ -18,10 +19,14 @@ import android.os.ParcelFileDescriptor;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.text.InputType;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Handler;
 import android.os.Looper;
 import java.text.SimpleDateFormat;
@@ -41,6 +46,24 @@ public class MainActivity extends Activity {
     private ParcelFileDescriptor accessoryFd;
     private UsbAccessory activeAccessory;
     private volatile boolean reading = false;
+    private final Handler manualHandler = new Handler(Looper.getMainLooper());
+    private long manualStartMs = 0L;
+    private int manualPromptIndex = -1;
+    private TextView manualPromptView;
+    private TextView manualElapsedView;
+    private EditText manualPhInput;
+    private EditText manualCo1Input;
+    private EditText manualUnitInput;
+    private AlertDialog manualDialog;
+    private final int[] manualPromptSeconds = new int[]{0, 30, 60, 120, 180, 300};
+    private final String[] manualPromptLabels = new String[]{
+        "СРАЗУ: перепиши с экрана титратора pH и CO1 до начала/на текущем этапе.",
+        "30 секунд: снова перепиши pH и CO1. Если на приборе идёт титрование — не прерывай его.",
+        "1 минута: снова перепиши pH и CO1 с экрана прибора.",
+        "2 минуты: перепиши pH и CO1; если титрование уже завершилось, отметь это в журнале.",
+        "3 минуты: перепиши текущие pH и CO1, если измерение ещё продолжается.",
+        "5 минут: перепиши pH и CO1, если измерение ещё продолжается. Дальше записывай при каждом изменении экрана."
+    };
     private EditText manualPh, manualCo1, manualVolume, manualNote;
     private TextView guideText;
     private final Handler guideHandler = new Handler(Looper.getMainLooper());
@@ -89,6 +112,9 @@ public class MainActivity extends Activity {
         Button read = new Button(this);
         read.setText("Начать принимать данные от прибора");
         layout.addView(read, new LinearLayout.LayoutParams(-1, -2));
+        Button manual = new Button(this);
+        manual.setText("Ручной сбор показаний с подсказками");
+        layout.addView(manual, new LinearLayout.LayoutParams(-1, -2));
         Button copy = new Button(this);
         copy.setText("Копировать весь текст");
         layout.addView(copy, new LinearLayout.LayoutParams(-1, -2));
@@ -152,6 +178,7 @@ public class MainActivity extends Activity {
         stopGuide.setOnClickListener(v -> { guideActive = false; guideHandler.removeCallbacks(guideRunnable); if (guideText != null) guideText.setText("Подсказки остановлены. Записи остаются в журнале на экране."); append("\nПодсказки остановлены.\n"); });
         open.setOnClickListener(v -> requestAccessoryAccess());
         read.setOnClickListener(v -> startReadingAccessory());
+        manual.setOnClickListener(v -> startManualObservation());
         copy.setOnClickListener(v -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard != null) {
@@ -162,6 +189,133 @@ public class MainActivity extends Activity {
             }
         });
         scanDevices();
+    }
+
+
+    private void startManualObservation() {
+        manualStartMs = android.os.SystemClock.elapsedRealtime();
+        manualPromptIndex = -1;
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        panel.setPadding(pad, pad, pad, pad);
+
+        TextView intro = new TextView(this);
+        intro.setText("Переписывай значения именно с экрана KEM AT-710. Не угадывай единицы CO1: введи их так, как они показаны на приборе. Сеанс не управляет титратором — он только собирает твои записи.");
+        intro.setTextSize(15);
+        panel.addView(intro);
+
+        manualPromptView = new TextView(this);
+        manualPromptView.setTextSize(18);
+        manualPromptView.setPadding(0, pad, 0, pad);
+        panel.addView(manualPromptView);
+
+        manualElapsedView = new TextView(this);
+        manualElapsedView.setText("Время сеанса: 00:00");
+        panel.addView(manualElapsedView);
+
+        manualPhInput = new EditText(this);
+        manualPhInput.setHint("pH с экрана, например 8,00");
+        manualPhInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        panel.addView(manualPhInput);
+
+        manualCo1Input = new EditText(this);
+        manualCo1Input.setHint("CO1 с экрана, например 0,3");
+        manualCo1Input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        panel.addView(manualCo1Input);
+
+        manualUnitInput = new EditText(this);
+        manualUnitInput.setHint("Единица CO1 как на приборе (если видна)");
+        panel.addView(manualUnitInput);
+
+        TextView tip = new TextView(this);
+        tip.setText("Подсказки появятся через 30 секунд, 1, 2, 3 и 5 минут. Если прибор завершит измерение раньше — сразу запиши итог. Если длится дольше, сохраняй значения при каждом изменении экрана.");
+        tip.setTextSize(13);
+        tip.setPadding(0, pad, 0, 0);
+        panel.addView(tip);
+
+        Button save = new Button(this);
+        save.setText("Записать показания в журнал");
+        panel.addView(save);
+
+        Button finish = new Button(this);
+        finish.setText("Завершить сбор");
+        panel.addView(finish);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(panel);
+        manualDialog = new AlertDialog.Builder(this)
+            .setTitle("Ручная фиксация KEM AT-710")
+            .setView(scroll)
+            .setNegativeButton("Закрыть", (d, w) -> manualHandler.removeCallbacksAndMessages(null))
+            .create();
+        manualDialog.setOnShowListener(d -> {
+            manualDialog.getWindow().setLayout(
+                (int) (getResources().getDisplayMetrics().widthPixels * 0.92),
+                (int) (getResources().getDisplayMetrics().heightPixels * 0.82));
+        });
+        manualDialog.show();
+
+        save.setOnClickListener(v -> saveManualObservation());
+        finish.setOnClickListener(v -> {
+            append("\nРучной сбор показаний завершён пользователем.\n");
+            manualHandler.removeCallbacksAndMessages(null);
+            if (manualDialog != null) manualDialog.dismiss();
+        });
+        updateManualPrompt();
+        manualHandler.post(manualTicker);
+    }
+
+    private final Runnable manualTicker = new Runnable() {
+        @Override public void run() {
+            if (manualDialog == null || !manualDialog.isShowing()) return;
+            updateManualPrompt();
+            manualHandler.postDelayed(this, 1000);
+        }
+    };
+
+    private void updateManualPrompt() {
+        if (manualStartMs == 0L || manualPromptView == null || manualElapsedView == null) return;
+        long elapsed = Math.max(0L, (android.os.SystemClock.elapsedRealtime() - manualStartMs) / 1000L);
+        manualElapsedView.setText(String.format(java.util.Locale.US, "Время сеанса: %02d:%02d", elapsed / 60, elapsed % 60));
+        int desired = 0;
+        for (int i = 0; i < manualPromptSeconds.length; i++) {
+            if (elapsed >= manualPromptSeconds[i]) desired = i;
+        }
+        if (desired != manualPromptIndex) {
+            manualPromptIndex = desired;
+            manualPromptView.setText("Подсказка (" + formatElapsed(manualPromptSeconds[desired]) + "):\n" + manualPromptLabels[desired]);
+            if (desired > 0) {
+                Toast.makeText(this, "KEM AT-710: время записать pH и CO1", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    private String formatElapsed(int seconds) {
+        return String.format(java.util.Locale.US, "%d:%02d", seconds / 60, seconds % 60);
+    }
+
+    private void saveManualObservation() {
+        String ph = manualPhInput == null ? "" : manualPhInput.getText().toString().trim();
+        String co1 = manualCo1Input == null ? "" : manualCo1Input.getText().toString().trim();
+        String unit = manualUnitInput == null ? "" : manualUnitInput.getText().toString().trim();
+        if (ph.isEmpty() && co1.isEmpty()) {
+            Toast.makeText(this, "Введи хотя бы одно значение с экрана прибора", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        long elapsed = Math.max(0L, (android.os.SystemClock.elapsedRealtime() - manualStartMs) / 1000L);
+        String record = String.format(java.util.Locale.US,
+            "\n[РУЧНОЕ НАБЛЮДЕНИЕ %02d:%02d] pH=%s; CO1=%s%s\n",
+            elapsed / 60, elapsed % 60,
+            ph.isEmpty() ? "не указано" : ph,
+            co1.isEmpty() ? "не указано" : co1,
+            unit.isEmpty() ? "" : "; единица CO1=" + unit);
+        append(record);
+        Toast.makeText(this, "Запись добавлена в журнал. Можно внести следующие показания.", Toast.LENGTH_SHORT).show();
+        manualPhInput.setText("");
+        manualCo1Input.setText("");
+        manualUnitInput.setText("");
     }
 
     private void append(String text) {
