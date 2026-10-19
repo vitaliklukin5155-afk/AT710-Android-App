@@ -95,8 +95,7 @@ public class MainActivity extends Activity {
                         append("Производитель: " + safe(accessory.getManufacturer()) + "\n");
                         append("Модель: " + safe(accessory.getModel()) + "\n");
                         append("Версия: " + safe(accessory.getVersion()) + "\n");
-                        fd = usbManager.openAccessory(accessory);
-                        append(fd != null ? "Accessory-канал открыт; протокол прибора ещё не реализован.\n" : "Не удалось открыть accessory-канал.\n");
+                        append("Accessory обнаружен; канал не открываем без отдельного разрешения Android.\\n");
                     } catch (Exception e) {
                         append("Ошибка accessory: " + e.getClass().getSimpleName() + "\n");
                     } finally {
